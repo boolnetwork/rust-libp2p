@@ -280,6 +280,9 @@ where
     /// similar mechanisms.
     external_addrs: Addresses,
 
+    /// Set whitelist of peers.
+    peers_whitelist: Option<HashSet<PeerId>>,
+
     /// List of nodes for which we deny any incoming connection.
     banned_peers: HashSet<PeerId>,
 
@@ -503,6 +506,17 @@ where
                 }
             };
 
+        // Check if peer whitelist exclude it
+        if let Some(peer_id) = peer_id.clone() {
+            if self.peers_whitelist.is_some()
+                && !self.peers_whitelist.as_ref().unwrap().contains(&peer_id)
+            {
+            let error = DialError::Banned;
+                self.behaviour
+                    .inject_dial_failure(Some(peer_id), handler, &error);
+                return Err(error);
+            }
+        }
         let dials = addresses
             .map(|a| match p2p_addr(peer_id, a) {
                 Ok(address) => {
@@ -602,6 +616,27 @@ where
         }
     }
 
+    pub fn peers_whitelist_mut(&mut self) -> &mut Option<HashSet<PeerId>> {
+        &mut self.peers_whitelist
+    }
+
+    pub fn add_peer_to_whitelist(&mut self, peer: PeerId) {
+        if let Some(whitelist) = &mut self.peers_whitelist {
+            whitelist.insert(peer);
+        } else {
+            let mut whitelist = HashSet::new();
+            whitelist.insert(peer);
+            self.peers_whitelist = Some(whitelist);
+        }
+
+    }
+
+    pub fn remove_peer_from_whitelist(&mut self, peer: &PeerId) {
+        if let Some(whitelist) = &mut self.peers_whitelist {
+            whitelist.remove(peer);
+        }
+    }
+
     /// Bans a peer by its peer ID.
     ///
     /// Any incoming connection and any dialing attempt will immediately be rejected.
@@ -682,6 +717,14 @@ where
                     self.pool.disconnect(peer_id);
                     return Some(SwarmEvent::BannedPeer { peer_id, endpoint });
                 } else {
+                    if let Some(whitelist) = &self.peers_whitelist {
+                        if !whitelist.contains(&peer_id) {
+                            self.banned_peer_connections.insert(id);
+                            self.pool.disconnect(peer_id);
+                            return Some(SwarmEvent::BannedPeer { peer_id, endpoint });
+                        }
+                    }
+
                     let num_established = NonZeroU32::new(
                         u32::try_from(other_established_connection_ids.len() + 1).unwrap(),
                     )
@@ -1410,6 +1453,7 @@ where
             supported_protocols,
             listened_addrs: HashMap::new(),
             external_addrs: Addresses::default(),
+            peers_whitelist: None,
             banned_peers: HashSet::new(),
             banned_peer_connections: HashSet::new(),
             pending_event: None,
